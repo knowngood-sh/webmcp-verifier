@@ -236,3 +236,86 @@ test("the population is figures-derived and dated, with no literals", () => {
   const src = read("../src/population.js").replace(/\/\*[\s\S]*?\*\//g, "");
   assert.equal(/\b\d{3,}\b/.test(src), false, "population.js carries a figure literal");
 });
+
+/* ---------------------------------------------------------------- layer 2
+ * Layer 2 runs the page in a headless browser. It exists to turn "the code
+ * is there" into "a tool actually registered". It must never do the reverse:
+ * a browser that works is not a licence to state a negative the static layer
+ * never established. Every assertion below fails if its gate is removed. */
+
+const fakePage = (tools) => ({
+  evaluated: [], ua: null, closed: false, gotos: [], invoked: [],
+  async setUserAgent(ua) { this.ua = ua; },
+  async evaluateOnNewDocument(src) { this.evaluated.push(String(src)); },
+  async goto(u) { this.gotos.push(u); },
+  async evaluate() { return tools; },
+  async close() { this.closed = true; },
+});
+
+test("the probe script records tools and never invokes one", async () => {
+  const R = await import("../src/runtime.js");
+  const shim = R.PROBE_SCRIPT;
+  assert.match(shim, /registerTool\(t\)\s*\{\s*record\(t\)/, "registerTool must record, not call");
+  assert.equal(/t\.(call|invoke|execute|run)\s*\(/.test(shim), false,
+    "the probe script calls a tool it was handed");
+  assert.equal(/\bfn\s*\(|handler\s*\(/.test(shim), false, "the probe script invokes a handler");
+  // both entry points, because the spec renamed one mid-trial
+  assert.match(shim, /navigator/); assert.match(shim, /document/);
+});
+
+test("the browser carries our user agent, and the page is always closed", async () => {
+  const R = await import("../src/runtime.js");
+  const page = fakePage(["a_tool"]);
+  const r = await R.enumerateTools("https://x.example/", { openPage: async () => page });
+  assert.deepEqual(r.tools, ["a_tool"]);
+  assert.match(page.ua, /^KnownGood-Verifier/, "the browser must not be disguised");
+  assert.equal(page.closed, true, "an unclosed page leaks a browser slot");
+});
+
+test("the runtime layer never downgrades a static verdict", async () => {
+  const { combine } = await import("../src/runtime.js");
+  for (const v of [W.VERDICT.NOT_DECLARED, W.VERDICT.COULD_NOT_ASK, W.VERDICT.EXCLUDED]) {
+    const before = { verdict: v, host: "x" };
+    assert.deepEqual(combine(before, { ok: true, tools: [] }), before,
+      `${v} was rewritten by a runtime result`);
+  }
+  const d = combine({ verdict: W.VERDICT.DECLARED, host: "x" }, { ok: false, reason: "busy" });
+  assert.equal(d.verdict, W.VERDICT.DECLARED, "a browser failure must not produce a negative");
+  assert.equal(d.runtime_checked, false);
+  assert.match(d.runtime_note, /unknown, not no/);
+});
+
+test("every browser failure is stated as unknown, never as a negative", async () => {
+  const { combine, UNAVAILABLE } = await import("../src/runtime.js");
+  for (const reason of Object.values(UNAVAILABLE)) {
+    const r = combine({ verdict: W.VERDICT.DECLARED, host: "x" }, { ok: false, reason });
+    assert.equal(r.verdict, W.VERDICT.DECLARED, `${reason} produced ${r.verdict}`);
+    assert.equal(r.runtime_checked, false, `${reason} claimed the runtime was checked`);
+  }
+});
+
+test("a refusal under load states how long to wait, and is never a 500", async () => {
+  const { BUSY_RETRY_SECONDS, combine, UNAVAILABLE } = await import("../src/runtime.js");
+  assert.ok(Number.isInteger(BUSY_RETRY_SECONDS) && BUSY_RETRY_SECONDS > 0,
+    "a busy refusal with no stated wait is an error, not a refusal");
+  const r = combine({ verdict: W.VERDICT.DECLARED, host: "x" },
+    { ok: false, reason: UNAVAILABLE.BUSY, retry_after_seconds: BUSY_RETRY_SECONDS });
+  assert.equal(r.retry_after_seconds, BUSY_RETRY_SECONDS);
+  assert.equal(r.verdict, W.VERDICT.DECLARED);
+});
+
+test("an incomplete population is no population", () => {
+  const full = {
+    webmcp_population_total: 10, webmcp_could_not_ask_total: 2,
+    webmcp_tested_total: 3, webmcp_runtime_total: 2, webmcp_source_only_total: 1,
+    _provenance: { webmcp_population_total: { measured_at: "2026-08-31T00:00:00Z" } },
+  };
+  assert.ok(P.populationOf(full), "a complete figures object must yield a population");
+  assert.equal(P.populationOf(null), null);
+  // a cached figures object predating a key must refuse, not render a blank
+  for (const k of Object.keys(full).filter((k) => k !== "_provenance")) {
+    const partial = { ...full, [k]: null };
+    assert.equal(P.populationOf(partial), null,
+      `a population was rendered with ${k} missing — it would print an empty denominator`);
+  }
+});

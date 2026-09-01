@@ -29,8 +29,31 @@ function measuredDate(f) {
   return null;
 }
 
+/** Every figure the sentences below actually name. */
+const REQUIRED = ["webmcp_population_total", "webmcp_could_not_ask_total",
+                  "webmcp_tested_total", "webmcp_runtime_total",
+                  "webmcp_source_only_total"];
+
 export function populationOf(f) {
   if (!f) return null;
+  /**
+   * AN INCOMPLETE POPULATION IS NO POPULATION.
+   *
+   * Caught on the real edge: the deployed figures object predated two Class B
+   * keys, and `situate()` rendered "— hosts we scanned on 2026-08-31", a
+   * sentence with a hole where the denominator goes. That is worse than
+   * omitting the block — it is a published measurement missing its number.
+   *
+   * It is also the could-not-ask rule applied to ourselves: if we cannot state
+   * the population, we do not state a partial one. The caller omits the
+   * section, exactly as it does when figures are unavailable entirely.
+   *
+   * In practice a missing key means a cached figures object outlived a change
+   * to its own shape: whatever keys that cache was not revised when a key was
+   * added. Refusing here turns that into a missing section rather than a
+   * published sentence with a hole where the denominator goes.
+   */
+  for (const k of REQUIRED) if (f[k] == null) return null;
   return {
     // the chain, in the order it happened
     crawled: f.webmcp_population_total,

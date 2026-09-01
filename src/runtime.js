@@ -39,6 +39,17 @@ export const PROBE_SCRIPT = `(() => {
   window.__kg_tools = names;
 })();`;
 
+/**
+ * The wait we quote when the runtime layer is busy.
+ *
+ * Browser Rendering allows two NEW browsers per minute per account, so a
+ * caller who arrives at a full ceiling waits on average half that window
+ * before a slot can be created. 30 seconds is that number and not a guess —
+ * and it is quoted as "about", because the queue ahead of them is not
+ * something we can see.
+ */
+export const BUSY_RETRY_SECONDS = 30;
+
 export const UNAVAILABLE = {
   NO_BINDING: "browser rendering is not configured on this deployment",
   NOT_ENTITLED: "browser rendering is not enabled for this account or token",
@@ -95,11 +106,15 @@ export async function enumerateTools(url, { openPage, timeoutMs = 20000 } = {}) 
  */
 export function combine(staticResult, runtime) {
   if (!staticResult || staticResult.verdict !== VERDICT.DECLARED) return staticResult;
-  if (!runtime || !runtime.ok)
+  if (!runtime || !runtime.ok) {
+    const reason = (runtime && runtime.reason) || UNAVAILABLE.NO_BINDING;
+    const busy = reason === UNAVAILABLE.BUSY;
     return { ...staticResult, runtime_checked: false,
+             ...(busy ? { retry_after_seconds: BUSY_RETRY_SECONDS } : {}),
              runtime_note: `Registration code is present. We could not run the page: ` +
-                           `${(runtime && runtime.reason) || UNAVAILABLE.NO_BINDING}. ` +
-                           `Whether a tool actually registers is unknown, not no.` };
+                           `${reason}. Whether a tool actually registers is unknown, not no.` +
+                           (busy ? ` Try again in about ${BUSY_RETRY_SECONDS} seconds.` : "") };
+  }
   if (runtime.tools.length)
     return { ...staticResult, verdict: "registered", runtime_checked: true,
              tools: runtime.tools, tool_count: runtime.tools.length,
