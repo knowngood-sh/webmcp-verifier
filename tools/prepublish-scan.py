@@ -97,7 +97,11 @@ def main():
         print(f"  [{'ok' if not hits else '!!'}] {label:<44} "
               f"{'clean' if not hits else 'FOUND at ' + ', '.join(hits[:3])}")
 
-    print(f"\n  {len(files)} file(s) scanned; {len(skipped)} skipped: "
+    # the count comes from the table, never from prose: it was written down as
+    # "twelve" once while the table held eleven, and a miscount in a security
+    # scan is the kind that gets repeated rather than checked.
+    print(f"\n  {len(CATEGORIES)} categor{'y' if len(CATEGORIES)==1 else 'ies'} checked; "
+          f"{len(files)} file(s) scanned; {len(skipped)} skipped: "
           f"{', '.join(os.path.basename(s) for s in skipped) or 'none'}")
     print("  (the scanner skips itself: its pattern list is not a leak, and this "
           "exemption is printed rather than hidden)")
