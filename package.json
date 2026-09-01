@@ -1,0 +1,11 @@
+{
+  "name": "webmcp-verifier",
+  "version": "1.0.0",
+  "description": "Check whether a website declares WebMCP tools, and whether any tool actually registers when the page runs. Honours robots.txt; lists tools, never invokes them.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": { ".": "./src/webmcp.js", "./runtime": "./src/runtime.js", "./population": "./src/population.js" },
+  "files": ["src", "LICENSE", "README.md"],
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "repository": { "type": "git", "url": "https://github.com/knowngood-sh/webmcp-verifier" }
+}
