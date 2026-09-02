@@ -122,18 +122,125 @@ export const WEBMCP_PATTERNS = [
 ];
 
 /** Matches with a short quotation, so a caller can see WHY it matched. */
-export function detectStatic(source, label = "") {
+/**
+ * Blank out everything that is TEXT rather than CODE, in place.
+ *
+ * The detector's whole rule is that a call shape matches and a mention does
+ * not: "this article explains provideContext" must never count. That rule was
+ * enforced against prose in the surrounding page and not against prose inside
+ * the file, so comments and string literals still matched. Measured on our
+ * own /webmcp.js: provideContext 2 occurrences and 0 in code, unregisterTool
+ * 1 and 0, registerTool 6 and 2. Two of the tokens shown to readers as
+ * "What matched" existed only in comments — on the page a judge opens, under
+ * a heading that claims the opposite.
+ *
+ * REPLACED WITH SPACES, NOT REMOVED, so every offset is preserved and the
+ * evidence context still slices out of the ORIGINAL source. Stripping by
+ * deletion would silently shift every quote by the length of the comments
+ * above it, which is a worse bug than the one being fixed: wrong evidence
+ * reads as deliberate.
+ *
+ * Regex literals are not tracked. Distinguishing `/re/` from division needs
+ * the parser this deliberately is not, and a regex containing a WebMCP call
+ * shape is itself a detector, which is a mention we are content to match.
+ */
+export function codeOnly(source) {
   const s = String(source || "");
+  const out = s.split("");
+  const blank = (from, to) => {
+    for (let i = from; i < to && i < out.length; i++) if (out[i] !== "\n") out[i] = " ";
+  };
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i], d = s[i + 1];
+    if (c === "/" && d === "/") { let j = s.indexOf("\n", i); if (j < 0) j = s.length; blank(i, j); i = j; continue; }
+    if (c === "/" && d === "*") { let j = s.indexOf("*/", i + 2); j = j < 0 ? s.length : j + 2; blank(i, j); i = j; continue; }
+    if (c === "<" && s.startsWith("<!--", i)) { let j = s.indexOf("-->", i); j = j < 0 ? s.length : j + 3; blank(i, j); i = j; continue; }
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < s.length) {
+        if (s[j] === "\\") { j += 2; continue; }
+        if (s[j] === c) { j++; break; }
+        j++;
+      }
+      // the quotes themselves go too: `"registerTool("` must not survive
+      blank(i, j);
+      i = j; continue;
+    }
+    i++;
+  }
+  return out.join("");
+}
+
+/**
+ * In an HTML document, only the contents of <script> elements are code.
+ * Everything else is text a person wrote for a reader: a heading that says
+ * "How to use provideContext()" is the textbook mention this detector exists
+ * to refuse, and it is far more likely on a page ABOUT WebMCP than a page
+ * that implements it. Blanked in place, so offsets survive.
+ */
+function scriptsOnly(s) {
+  const out = s.split("");
+  let i = 0, keepFrom = -1;
+  const blank = (a, b) => { for (let k = a; k < b && k < out.length; k++) if (out[k] !== "\n") out[k] = " "; };
+  const re = /<script\b[^>]*>|<\/script\s*>/gi;
+  let m, last = 0;
+  while ((m = re.exec(s))) {
+    if (m[0][1] === "/") {                      // closing tag: keep what preceded
+      keepFrom = -1; last = m.index + m[0].length;
+    } else {                                    // opening tag: blank up to it
+      if (keepFrom === -1) blank(last, m.index + m[0].length);
+      keepFrom = m.index + m[0].length; last = keepFrom;
+    }
+    if (m[0][1] === "/") { /* nothing further */ } else i = last;
+  }
+  if (keepFrom === -1) blank(last, s.length);
+  return out.join("");
+}
+
+/**
+ * The window of source quoted as evidence, around a match.
+ *
+ * IT OPENED MID-TOKEN. A fixed 40-character lookback cut whatever word it
+ * landed in, so the live page showed `peof navigator !== "undefined"` and
+ * `ypeof document !== "undefined"` — `typeof`, beheaded — and closed on
+ * `=== "fun`. On the panel that is the whole point of the page that reads as
+ * corrupted output, which is a bad look for a tool whose product is
+ * trustworthy evidence.
+ *
+ * The window is snapped inward to a token boundary at both ends, never past
+ * the match itself, and an ellipsis marks each end that was truncated so it
+ * reads as the fragment it is rather than as a whole line.
+ */
+const WORD = /[\w$]/;
+function excerpt(s, at, len, before = 40, after = 60) {
+  let start = Math.max(0, at - before);
+  let end = Math.min(s.length, at + len + after);
+
+  // walk the start forward off the middle of a token, stopping at the match
+  while (start > 0 && start < at && WORD.test(s[start - 1]) && WORD.test(s[start])) start++;
+  // and the end backward, never inside the match
+  const matchEnd = at + len;
+  while (end < s.length && end > matchEnd && WORD.test(s[end - 1]) && WORD.test(s[end])) end--;
+
+  const body = s.slice(start, end).replace(/\s+/g, " ").trim();
+  return (start > 0 ? "\u2026" : "") + body + (end < s.length ? "\u2026" : "");
+}
+
+export function detectStatic(source, label = "", { html = false } = {}) {
+  const s = String(source || "");
+  // match against code, quote from the original: same offsets, both true
+  const code = codeOnly(html ? scriptsOnly(s) : s);
   const out = [];
   for (const p of WEBMCP_PATTERNS) {
-    const m = p.re.exec(s);
+    const m = p.re.exec(code);
     if (!m) continue;
     const at = m.index;
     out.push({
       pattern: p.id,
       where: label,
       // evidence, not proof: enough context for a human to judge a false positive
-      context: s.slice(Math.max(0, at - 40), at + 60).replace(/\s+/g, " ").trim(),
+      context: excerpt(s, at, m[0].length),
     });
   }
   return out;
@@ -222,7 +329,11 @@ export async function checkWebmcp(input, { fetchImpl = fetch, now = () => new Da
   /* 2 — the page */
   const page = await get(url.href, fetchImpl);
   if (!page.ok)
+    // `status` is carried structurally as well as in the prose reason: a
+    // caller deciding whether to retry by a different transport should key on
+    // the number, not parse the sentence we wrote for a human.
     return { ...base, verdict: VERDICT.COULD_NOT_ASK, robots_read: robots.ok,
+             status: page.status || null,
              reason: page.retryAfter ? `rate-limited (${page.status})`
                    : page.status ? `HTTP ${page.status}` : (page.error || "fetch failed"),
              ...(page.retryAfter ? { retry_after: page.retryAfter } : {}) };
@@ -230,7 +341,7 @@ export async function checkWebmcp(input, { fetchImpl = fetch, now = () => new Da
     return { ...base, verdict: VERDICT.COULD_NOT_ASK, robots_read: robots.ok,
              reason: `not an HTML page (${page.type || "unknown content-type"})` };
 
-  const evidence = detectStatic(page.body, "page HTML");
+  const evidence = detectStatic(page.body, "page HTML", { html: true });
 
   /* 3 — first-party scripts. WebMCP registration is JS, and most sites ship
    *     it in a bundle, so an HTML-only check would report NOT_DECLARED for

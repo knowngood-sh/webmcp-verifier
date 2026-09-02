@@ -95,6 +95,93 @@ export async function enumerateTools(url, { openPage, timeoutMs = 20000 } = {}) 
 }
 
 /**
+ * A fetch, backed by a real browser navigation.
+ *
+ * WHY THIS EXISTS. A Cloudflare Worker cannot make a subrequest to a hostname
+ * its own script serves — Cloudflare refuses the loop and surfaces HTTP 522.
+ * So this checker could reach every site on the web except the one it runs
+ * on, and the one it runs on is the first a reader will try. Browser
+ * Rendering is a separate service and is NOT subject to that block: it loads
+ * our own origin normally, which is what makes a genuine self-check possible.
+ *
+ * IT IS THE SAME CHECK, NOT A SUBSTITUTE FOR ONE. The bytes still come from
+ * the live host over the network, with our user agent, and robots.txt is
+ * still read before the page. Only the transport changes. Nothing here reads
+ * local state, and no verdict is ever synthesised from what we know about
+ * ourselves — that would make the one claim this product rests on worthless.
+ *
+ * Shaped as the subset of Response that webmcp.js actually uses, so the core
+ * is unchanged and stays transport-agnostic.
+ */
+export function browserFetch(page, { timeoutMs = 15000 } = {}) {
+  // The origin of the document currently loaded, which is NOT always the
+  // origin we asked for: www.knowngood.sh 301s to the apex, so after the
+  // first navigation the document sits on knowngood.sh and an in-page fetch
+  // of the www URL is cross-origin and dies in CORS. Track where we actually
+  // ARE, not where we aimed.
+  let docOrigin = null;
+  return async (url, opts = {}) => {
+    const ua = (opts.headers && opts.headers["user-agent"]) || VERIFIER_UA;
+    await page.setUserAgent(ua);
+
+    /* The FIRST call navigates. It is always robots.txt — consent is read
+     * before anything else is requested, and that ordering is the point — and
+     * a text file navigates cleanly. It also gives us a document on the
+     * target's origin, which is what the branch below needs.
+     *
+     * EVERY LATER CALL IS FETCHED FROM INSIDE THAT DOCUMENT. Navigating a
+     * browser to a .js URL does not render it, it downloads it, and the
+     * navigation aborts — which is exactly how this first failed: robots.txt
+     * and the page read fine and every first-party script came back
+     * unreadable, so a site that declares in a bundle looked like a site we
+     * could not ask about. An in-page fetch is same-origin, allowed by our
+     * own connect-src, and returns the script SOURCE, which is what the
+     * static detector reads. */
+    // Navigate when we have no document yet, or when this URL lives on a
+    // different origin than the one we are on. In-page fetch is only for
+    // same-origin subresources, which is exactly what first-party scripts are.
+    if (docOrigin === null || new URL(url).origin !== docOrigin) {
+      const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+      if (!resp) throw new Error("no response");
+      const headers = resp.headers ? resp.headers() : {};
+      const status = resp.status();
+      const landed = (resp.url && resp.url()) || url;
+      // the POST-REDIRECT origin, so the next call compares against reality
+      try { docOrigin = new URL(landed).origin; } catch { docOrigin = null; }
+      let body = null;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        url: landed,
+        headers: { get: (n) => headers[String(n).toLowerCase()] ?? null },
+        text: async () => (body === null ? (body = await resp.text()) : body),
+      };
+    }
+
+    const r = await page.evaluate(async (u, agent) => {
+      try {
+        // eslint-disable-next-line no-undef
+        const res = await fetch(u, { headers: { accept: agent }, redirect: "follow" });
+        const h = {};
+        res.headers.forEach((v, k) => { h[k.toLowerCase()] = v; });
+        return { status: res.status, url: res.url, headers: h, body: await res.text() };
+      } catch (e) {
+        return { error: String((e && e.message) || e) };
+      }
+    }, url, "text/html,application/javascript,*/*");
+
+    if (!r || r.error) throw new Error((r && r.error) || "in-page fetch failed");
+    return {
+      ok: r.status >= 200 && r.status < 300,
+      status: r.status,
+      url: r.url || url,
+      headers: { get: (n) => r.headers[String(n).toLowerCase()] ?? null },
+      text: async () => r.body,
+    };
+  };
+}
+
+/**
  * Fold a runtime result into a static verdict.
  *
  * THE COMBINATIONS THAT MATTER:

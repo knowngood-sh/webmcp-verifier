@@ -319,3 +319,83 @@ test("an incomplete population is no population", () => {
       `a population was rendered with ${k} missing — it would print an empty denominator`);
   }
 });
+
+/* ------------------------------------- a mention is not a call, in the file --
+ *
+ * The rule was enforced against prose in the page and not against prose in
+ * the file, so comments and string literals still matched. Measured on the
+ * author's own /webmcp.js: provideContext 2 occurrences and 0 in code,
+ * unregisterTool 1 and 0, registerTool 6 and 2 — two tokens shown to readers
+ * as evidence that no code ever used. */
+
+const ALL_MENTIONS = `<!doctype html>
+<!-- This page explains navigator.modelContext and document.modelContext. -->
+<h1>How to use provideContext()</h1>
+<p>Call registerTool() to add a tool, and unregisterTool() to remove one.</p>
+<script>
+  // navigator.modelContext.provideContext({ tools: [] });
+  /* registerTool(t) and unregisterTool(t) are the two halves of the API. */
+  const docs = "call navigator.modelContext.provideContext() to register";
+</script>`;
+
+test("a file that mentions every token and calls none is not_declared", async () => {
+  const r = await W.checkWebmcp("mentions.example", {
+    fetchImpl: stub({ "/robots.txt": "", "/": ALL_MENTIONS }),
+  });
+  assert.equal(r.verdict, W.VERDICT.NOT_DECLARED,
+    `prose about WebMCP was read as WebMCP: ${JSON.stringify(r.evidence)}`);
+  assert.deepEqual(r.evidence || [], []);
+});
+
+test("each token in a comment or a string is invisible; in code it is not", () => {
+  for (const call of ["navigator.modelContext", "document.modelContext",
+                      "provideContext(", "registerTool(", "unregisterTool("]) {
+    for (const hidden of [`// ${call}`, `/* ${call} */`, `<!-- ${call} -->`,
+                          `var s = "${call}";`, `var s = '${call}';`])
+      assert.deepEqual(W.detectStatic(hidden), [], `${call} matched while hidden in: ${hidden}`);
+    assert.ok(W.detectStatic(`x = ${call})`).length >= 1, `${call} stopped matching in real code`);
+  }
+});
+
+test("in HTML, only script contents are code", () => {
+  assert.deepEqual(W.detectStatic(ALL_MENTIONS, "p", { html: true }), [],
+    "page prose was read as an implementation");
+  const real = '<html><p>docs about registerTool()</p>' +
+               '<script>navigator.modelContext.provideContext({tools:[]})</script></html>';
+  assert.ok(W.detectStatic(real, "p", { html: true }).length >= 1,
+    "a real inline registration stopped matching");
+});
+
+test("an evidence excerpt never opens or closes mid-token", () => {
+  const src = 'if (typeof navigator !== "undefined") collect(navigator.modelContext); ' +
+              'if (typeof document !== "undefined") collect(document.modelContext);';
+  const flat = src.replace(/\s+/g, " ");
+  const ev = W.detectStatic(src, "webmcp.js");
+  assert.ok(ev.length >= 2);
+  for (const e of ev) {
+    const body = e.context.replace(/^…/, "").replace(/…$/, "");
+    const i = flat.indexOf(body);
+    assert.ok(i >= 0, `excerpt is not a slice of the source: ${JSON.stringify(body)}`);
+    if (i > 0 && /[\w$]/.test(body[0]))
+      assert.equal(/[\w$]/.test(flat[i - 1]), false, `excerpt opens mid-token: ${e.context}`);
+    const j = i + body.length;
+    if (j < flat.length && /[\w$]/.test(body[body.length - 1]))
+      assert.equal(/[\w$]/.test(flat[j]), false, `excerpt closes mid-token: ${e.context}`);
+    assert.equal(/^…?(peof|ypeof)\b/.test(e.context), false, `a beheaded token survived: ${e.context}`);
+  }
+});
+
+test("the population block states the number and stops", () => {
+  const POP = { crawled: 13989, could_not_be_asked: 1224, carried_the_code: 647,
+                registered_at_runtime: 580, code_but_registered_nothing: 67,
+                distinct_tool_names: 997, measured: "2026-08-31" };
+  assert.equal(P.situate("not_declared", POP),
+    "13,989 hosts scanned on 2026-08-31; 647 carried the code.");
+  /* Stating the number is the product; telling a reader how to feel about
+     their own result is not, and "not a deficiency" cannot hold uniformly —
+     for a site with a checkout it may well be one. Deleted, not softened. */
+  for (const v of ["declared", "not_declared", "could_not_ask", "excluded"])
+    for (const banned of ["not a deficiency", "overwhelming majority"])
+      assert.equal((P.situate(v, POP) || "").toLowerCase().includes(banned), false,
+        `the ${v} block carries "${banned}"`);
+});

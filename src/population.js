@@ -87,9 +87,14 @@ export function situate(verdict, p) {
              `${n(p.registered_at_runtime)} actually registered a tool when the page ran ` +
              `and ${n(p.code_but_registered_nothing)} registered nothing.`;
     case "not_declared":
+      /* THE SENTENCE THAT USED TO FOLLOW THESE NUMBERS IS DELETED, NOT MOVED.
+         It read "Not declaring is the overwhelming majority position, not a
+         deficiency." Stating the number is the product; telling a reader how
+         to feel about their own result is not, and "not a deficiency" is a
+         judgement that cannot hold uniformly — for a site with a checkout it
+         may well be one. Do not reinstate it here or anywhere else. */
       return `${n(p.crawled)} hosts scanned on ${p.measured}; ` +
-             `${n(p.carried_the_code)} carried the code. Not declaring is the ` +
-             `overwhelming majority position, not a deficiency.`;
+             `${n(p.carried_the_code)} carried the code.`;
     case "could_not_ask":
       return `${n(p.could_not_be_asked)} of ${n(p.crawled)} hosts in our own scan on ` +
              `${p.measured} could not be asked either. We report that as its own ` +
